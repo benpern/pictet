@@ -1,11 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Sun Dec 12 12:26:59 2021
-
-@author: benoit
-"""
-
 import pandas as pd
 import numpy as np
 import wbdata
@@ -198,7 +190,6 @@ country_list = list(spreads.columns[1:])
 ##########################       READ DATA      ##########################
 
 df_id_country = get_mapping_country_code(country_list) # there might be some missing values
-# in case it did not work. We won't consider the few ones that failed  (only DID)??
 df_id_country.to_csv(path_file + "country_mapping.csv")
 
 #CPI, inflation, unemployment, life expectancy, GDP growth, debt
@@ -211,13 +202,7 @@ df["Date"] = [x[1] for x in df.index.values]
 
 df_recent = df[df.Date >= datetime.datetime(2010,1,1)]
 
-df = df.drop(columns=["Youth unemployment rate, aged 15-24, female (% of female youth labor force)", 
-                      "Unemployment rate, aged 25-64 (% of labor force aged 25-64)",
-                      "Central government debt, total (% of GDP)"])
-
-df = df.sort_values(["country", "Date"])
 ##########################       PROCESS THE DATA      ##########################
-
 #df.isnull().sum()/len(df) -> unemployment rate, youth unemployment rate and central governemnt debt 
 #are around 75% of the time NA. Let's drop them
 df_recent.isnull().sum()/len(df_recent)
@@ -228,6 +213,8 @@ df_recent = df_recent.drop(columns=["Youth unemployment rate, aged 15-24, female
 #plot_nas(df_recent)
 
 #extend life of variables (obliged as we only have data until 2019) and we will want to predict until 2022...
+#no need to predict two years as the benefit would be minimal (see difference of na between 2018 and 2019)
+#so we don't compute the CV and we just extend by 1 year
 df_CV = pd.DataFrame({"category":[""]})
 df_recent = fill_na_with_older_values(df_recent, df_CV, 1, 1)
 

@@ -1,19 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Mon Dec 13 12:02:15 2021
-
-@author: benoit
-"""
-
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Sat Dec 11 16:44:57 2021
-
-@author: benoit
-"""
-
 import pandas as pd
 import numpy as np
 import wbdata
@@ -88,17 +72,13 @@ spreads = pd.read_excel(path_file + "2021_ESG_datascientist_casestudy_v2_data.xl
 spreads = spreads.replace(0., np.nan)
 
 
-spreads_without_covid = spreads[(spreads.Date < "2020-02-28") | (spreads.Date > "2020-08-31")]
-
-
-spreads_before_covid = spreads[spreads.Date < "2020-02-28"]
+######################## prepare the data: add the date dimension as variables - feature engineering    ########################
 
 
 ## Lets drop the time dimension: so all are instances
-# but for now we predict at 1 month. we should potentially change that
-
-#list_months = [1, 3, 6, 12, 18, 24]
-
+# list of the previous time window (in months) for which we will want the previous mean spread
+# and the previous delta spread
+# Taking very big values reduces significantly the training/testing set (as we loose the first x months)
 list_months = [1, 3, 6]
 
 df_mean_spreads = pd.DataFrame({})
@@ -123,8 +103,7 @@ all_data["Date"] = [x[0] for x in all_data.index.values]
 all_data["country"] = [x[1] for x in all_data.index.values]
 all_data = all_data.sort_values(["country", "Date"])
 
-##### chose the prediciton we want to make: 1 months 3 months? 6 months? 1 year?
-normalized_data_from_countries = pd.read_csv(path_file + "normalized_data_recent.csv")
+normalized_data_from_countries = pd.read_csv(path_file + "normalized_data_recent.csv") #output from read_data_for_spreads.csv
 normalized_data_from_countries = normalized_data_from_countries.iloc[:,1:]
 normalized_data_from_countries.Date = pd.to_datetime(normalized_data_from_countries.Date)
 
@@ -135,35 +114,93 @@ for country in ESG_Scores.country.unique():
     if country in df_id_country.country_list.values:
         ESG_Scores.loc[ESG_Scores.country == country, "country"] = df_id_country.loc[df_id_country.country_list == country, "iso3code"].values[0]    
 
+#### chose the prediciton we want to make: 1 months 3 months? 6 months? 1 year?
 month_spread_prediction = 6
 # prediction either direction or value. 
 all_data = prepare_all_data(spreads, all_data, normalized_data_from_countries, ESG_Scores, month_spread_prediction, prediction = "direction")
 all_data = all_data.drop(columns = ["year"])
 
-
-all_data_jan = all_data[all_data.Date.dt.month.isin([3, 9])] #REMARK: could add june also??
+# the months to select depend on the month_spread_prediction:
+#if month_spread_prediction==12 -> we take only january
+# if month spread_prediction==6 -> we take january and July
+# This is to avoid correlation in the training set (which leads to overfitting)
+all_data_jan = all_data[all_data.Date.dt.month.isin([1, 7])] 
 all_data_train = all_data_jan[(all_data_jan.Date < "2017-10-01")]
 all_data_test = all_data_jan[(all_data_jan.Date > "2018-04-01") & (all_data.Date < "2019-02-28")]
 all_data_rest = all_data_jan[(all_data_jan.Date > "2019-02-28")]
 
 X_train = all_data_train.drop(columns=["Date", "country", "spread"])
+#for classifying purposes, use np.sign() otherwise not 
 Y_train = np.sign(all_data_train[["spread"]])
 
 X_test = all_data_test.drop(columns=["Date", "country", "spread"])
 Y_test = all_data_test[["spread"]]
 
+
+########################          model training        ########################
+from sklearn.model_selection import RepeatedStratifiedKFold
 from xgboost import XGBRFRegressor, XGBRFClassifier
 from sklearn.model_selection import RepeatedKFold
 from sklearn.model_selection import cross_val_score
-import warnings
-warnings.filterwarnings("ignore", category=FutureWarning)
+
+#### train linear regression using only one coupe of (previous mean spread, previous delta spread)
+
+#result_regression = pd.DataFrame({})
+#for month_chosen in list_months:
+#    list_result = []
+#    to_remove = [x for x in list_months if x != month_chosen]
+#    list_drop = ["mean_spread_" + str(i) for i in to_remove]
+#    list_drop.extend(["previous_delta_" + str(i) for i in to_remove])
+#    
+#    X_train_regr = X_train.drop(columns = list_drop)
+#    
+#    scores = cross_validate(estimator=linear_model.LinearRegression(), X=X_train_regr.as_matrix(), y=Y_train.as_matrix(), cv=5, scoring='neg_mean_absolute_percentage_error', 
+#                            return_train_score=True)
+#    list_result.append(-np.mean(scores["test_score"]))
+#    
+#    scores = cross_validate(estimator=linear_model.Lasso(), X=X_train.as_matrix(), y=Y_train.as_matrix(), cv=5, scoring='neg_mean_absolute_percentage_error', 
+#                        return_train_score=True)
+#    list_result.append(-np.mean(scores["test_score"]))
+#    
+#    scores = cross_validate(estimator=linear_model.Ridge(), X=X_train.as_matrix(), y=Y_train.as_matrix(), cv=5, scoring='neg_mean_absolute_percentage_error', 
+#                        return_train_score=True)
+#    list_result.append(-np.mean(scores["test_score"]))
+#    
+#    result_regression["month_" + str(month_chosen)] = list_result
+#result_regression.index = ["Linear", "Lasso", "Ridge"]
+
+
+
+###### grid serach with cross validation - tested on various models for classifying and regression purposes
+
+#parameters = {"scoring":['neg_mean_absolute_percentage_error'],
+#              'learning_rate': [0.5, 0.8, 1], #so called `eta` value
+#              'max_depth': [10, 15, 40],
+##              'min_child_weight': [4],
+##              'silent': [1],
+#              'subsample': [0.9],
+#              'colsample_bynode': [0.1, 0.15],
+#              'n_estimators': [100]}
+#
+#from sklearn.model_selection import GridSearchCV
+#
+#
+#xgb_grid = GridSearchCV(XGBRFRegressor(), parameters, cv = 5, n_jobs = 5, verbose=True)
+#
+#xgb_grid.fit(X_train,Y_train)
+#
+#print(xgb_grid.best_score_)
+#print(xgb_grid.best_params_)
+
+
+
 result = pd.DataFrame({})
 for country in all_data_train.country.unique():
     all_data_train_country = all_data_train[all_data_train.country == country]
     all_data_train_country["spread"] = all_data_train_country["spread"].replace(0., np.nan)
     all_data_train_country = all_data_train_country[~all_data_train_country.isnull().any(axis=1)]
     
-    X_train = all_data_train_country.drop(columns=["Date", "country", "spread"])[["mean_spread_1", "previous_delta_6", "S", "G", 'CPI Price,not seas.adj,,,', 'Consumer price index (2010 = 100)',
+    X_train = all_data_train_country.drop(columns=["Date", "country", "spread"])#[["mean_spread_1", "previous_delta_6", "S", "G", 'CPI Price,not seas.adj,,,', 'Consumer price index (2010 = 100)',
        'Inflation, consumer prices (annual %)',
        'Life expectancy at birth, total (years)', 'GDP growth (annual %)',
        'Unemployment, total (% of total labor force) (modeled ILO estimate)',
@@ -188,67 +225,6 @@ for country in all_data_train.country.unique():
 
             
 result.to_csv(path_file + "month_production_" + str(month_spread_prediction) + "_less_predictors.csv")  
-    
 
-for country in spreads.columns[1:]: 
-    print(country)
-    plt.figure(figsize=(20,10))
-    plt.plot(spreads.Date, spreads[country])
-    plt.plot(spreads.Date, spreads[country].rolling(window=3).mean(), label="3 month MA")
-    plt.plot(spreads.Date, spreads[country].rolling(window=6).mean(), label="6 month MA")
-    plt.legend()
-    plt.grid()
-    plt.ylabel("spread")
-    plt.title("Evol spread of " + country)
-    plt.savefig(path_file + "graphs/evol_spreads_per_country/" + country + ".png")
-    plt.close()
     
     
-
-#########################     ARIMA MODEL         ##############################
-from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
-for country in spreads.columns[1:]:
-    # Original Series
-    fig, axes = plt.subplots(3, 2, sharex=True)
-    axes[0, 0].plot(spreads[country]); axes[0, 0].set_title('Original Series')
-    plot_acf(spreads[country], ax=axes[0, 1])
-    
-    # 1st Differencing
-    axes[1, 0].plot(spreads[country].diff()); axes[1, 0].set_title('1st Order Differencing')
-    plot_acf(spreads[country].diff().dropna(), ax=axes[1, 1])
-    
-    # 2nd Differencing
-    axes[2, 0].plot(spreads[country].diff().diff()); axes[2, 0].set_title('2nd Order Differencing')
-    plot_acf(spreads[country].diff().diff().dropna(), ax=axes[2, 1])
-    
-    plt.savefig(path_file + "graphs/ARIMA/auto_correl" + country + ".png")
-    plt.close()
--> d = 1
-
-
-# PACF plot of 1st differenced series
-plt.rcParams.update({'figure.figsize':(9,3), 'figure.dpi':120})
-
-fig, axes = plt.subplots(1, 2, sharex=True)
-axes[0].plot(spreads.BRA.diff()); axes[0].set_title('1st Differencing')
-axes[1].set(ylim=(0,5))
-plot_pacf(spreads.BRA.diff().dropna(), ax=axes[1])
-
-plt.show()
-
--> p = 1 
-
-
-import pandas as pd
-from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
-import matplotlib.pyplot as plt
-plt.rcParams.update({'figure.figsize':(9,3), 'figure.dpi':120})
-
-fig, axes = plt.subplots(1, 2, sharex=True)
-axes[0].plot(spreads.ARG.diff()); axes[0].set_title('1st Differencing')
-axes[1].set(ylim=(0,1.2))
-plot_acf(spreads.ARG.diff().dropna(), ax=axes[1])
-
-plt.show()
-
--> q = 1 

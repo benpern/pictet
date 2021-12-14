@@ -1,11 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Sat Dec 11 10:05:29 2021
-
-@author: benoit
-"""
-
 import pandas as pd
 import numpy as np
 import wbdata
@@ -187,65 +179,99 @@ for x in ESG_data.index:
 ESG_data["country"] = country_to_add
 ESG_data["date"] = date_to_add
 
-ESG_data_2020 = ESG_data[ESG_data.date.isin(["2020-01-01", "2019-01-01", "2018-01-01"])]
-ESG_data_2020 = ESG_data_2020[ESG_data_2020.country.isin(list_of_all_countries)]
-
-df_CV = pd.DataFrame({"category":[""]})
-df_CV = pd.read_csv(path_file + "variation_coefficient_countries.csv")
-
-result = fill_na_with_older_values(ESG_data_2020, df_CV, 1, 2)
-
-
-ESG_data_2020.iloc[:,:-2].isna().sum().sum()/((len(ESG_data_2020.columns) - 2) * (len(ESG_data_2020))) # 8390 (25%)
-
-result_2020 = result[result.date == "2020-01-01"]
-
-result_2020.iloc[:,:-2].isna().sum().sum()/((len(result_2020.columns) - 2) * (len(result_2020))) # 8390 (25%)
-
-
-#ESG_data.to_csv(path_file + "ESG_data_world_bank.csv")
-ESG_data = pd.read_csv(path_file + "ESG_data_world_bank.csv")
-
 
 #########    normalize the data and change them to scores between 0 and 1   #########
 # the variables that are already scores we do not normalize them. Only the other ones.
 estimates = ["Government Effectiveness: Estimate", "Regulatory Quality: Estimate", "Voice and Accountability: Estimate",
            "Rule of Law: Estimate", "Political Stability and Absence of Violence/Terrorism: Estimate"]
-not_estimates = ESG_data.columns[2:].values.tolist()
+not_estimates = ESG_data.columns.values.tolist()
 for x in estimates:
     not_estimates.remove(x)
+    
+not_estimates.remove("date")
+not_estimates.remove("country")
 
     
 ESG_data_normalized = ESG_data.copy()
 ESG_data_normalized[estimates] = ESG_data_normalized[estimates] / 4 + 0.5
 ESG_data_normalized[not_estimates] = (ESG_data_normalized[not_estimates] - np.mean(ESG_data_normalized[not_estimates])) / (4 * np.std(ESG_data_normalized[not_estimates])) + 0.5
-ESG_data_normalized.iloc[:,2:] = np.minimum(ESG_data_normalized.iloc[:,2:], 1)
-ESG_data_normalized.iloc[:,2:] = np.maximum(ESG_data_normalized.iloc[:,2:], 0)
+ESG_data_normalized.iloc[:,:-2] = np.minimum(ESG_data_normalized.iloc[:,:-2], 1)
+ESG_data_normalized.iloc[:,:-2] = np.maximum(ESG_data_normalized.iloc[:,:-2], 0)
 
 
 #################    computation of coefficients of variation   ##############
-#knowing that one of the issues is that we don't have up to date data available::
-# for such categories can we reuse older grades? For that we need to check the volatility of the grades 
-# (not between different countries but the volatility of the grade through time)
-# In order to be able to compare the volatilities, we will normalise the variables.
-
-#coefficient of variation CV=standard deviation / mean
-# https://www.researchgate.net/post/What-do-you-consider-a-good-standard-deviation
-
-# computing the stf directly using groupby does not work probably due to some results
-# for which there are only nas. Let's do a loop:
-
-df_CV = get_variation_coefficients(ESG_data, ESG_data_normalized_country)
-df_CV.to_csv(path_file + "variation_coefficient_countries.csv")
-df_CV = pd.read_csv(path_file + "variation_coefficient_countries.csv")
+#to compute the CV coefficients we do not use the normalization shown above.
+# that's in order to not modify the std. 
+df_CV = pd.read_csv(path_file + "CV.csv")
+#df_CV = get_variation_coefficients(ESG_data, ESG_data_normalized_country)
+#df_CV.to_csv(path_file + "CV.csv")
 
 #plot histogram of the CV
 histogram_CV(df_CV)
 
-ESG_data_normalized.shape #(16226, 67)
-check = ESG_data_normalized.isna().all()
-ESG_data_normalized = ESG_data_normalized.loc[:,~check]
-ESG_data_normalized.shape #(16226, 63) -> 4 columns with only NA? same ones as the ones above?
 
-##########      fill the NA with previous values when possible     ############
+#############      fill the NA with previous values when possible     ############
 ESG_data_normalized_recent = ESG_data_normalized[ESG_data_normalized.date > "2000-01-01"]
+
+ESG_data_normalized_recent = fill_na_with_older_values(ESG_data_normalized_recent, df_CV, 1, 2)
+
+
+
+################## COMPUTE ESG SCORES ####################################
+#hand written ESG file
+pos_or_neg = pd.read_excel(path_file + "ESG.xlsx", sheet_name="ESG data") #know wether the variable is positive or negative
+categories = pd.read_excel(path_file + "ESG.xlsx", sheet_name="weights") #categories and sub pillars
+
+
+pos_or_neg = pos_or_neg.merge(df_name_id, on ="id", how="left")
+pos_or_neg["name"] = pos_or_neg["name_y"].copy()
+
+#prepare the file ESG_data_normalized_recent:
+for name in pos_or_neg.name:
+    if name in ESG_data_normalized_recent.columns:
+        if (pos_or_neg.loc[pos_or_neg.name == name, "Positive or negative"] == "-").values[0]:
+            ESG_data_normalized_recent[name] = 1 - ESG_data_normalized_recent[name]
+
+#compute grades per sub_pilar
+scores = pd.DataFrame({})
+scores["country"] = ESG_data_normalized_recent.country.copy()
+scores["date"] = ESG_data_normalized_recent.date.copy()
+for sub_pilar in categories["sub pilar"]:
+    categories_sub_pilar = categories[categories["sub pilar"] == sub_pilar]
+    categories_sub_pilar = categories_sub_pilar.dropna(axis=1)
+    categories_sub_pilar_id = categories_sub_pilar.iloc[:,3:]
+    names = df_name_id[df_name_id.id.isin(categories_sub_pilar_id.values.tolist()[0])]
+    scores[sub_pilar] = np.mean(ESG_data_normalized_recent[pd.Series(names.name).tolist()], axis=1)
+    
+#compute grades per pilar
+for pilar in categories["pilar"]:
+    sub_pilar = categories.loc[categories.pilar == pilar, "sub pilar"].values.tolist()
+    scores[pilar] = np.nan
+    #if more than 50% of the grades are NA for a certain pilar the pilar will get NA
+    scores.loc[np.sum(scores[sub_pilar].isna(), axis=1)/len(sub_pilar) <= 0.5, pilar] = np.mean(scores[sub_pilar], axis=1)
+
+scores["ESG"] = 0.25 * scores["E"] + 0.25 * scores["S"] + 0.5 * scores["G"]
+#scores.to_csv(path_file + "ESG_score.csv")
+
+
+
+
+####################   check ESG scores and compare to GNI ###################
+GNI_per_capita = pd.read_csv(path_file  + "/GNI_per_capita.csv")
+np.max(GNI_per_capita.date) # 2019-01-01'
+GNI_per_capita = GNI_per_capita[GNI_per_capita.date == "2019-01-01"]
+GNI_per_capita = GNI_per_capita[GNI_per_capita.country.isin(scores_countries_2019.country)]
+
+scores_countries_2019 = scores_countries_2019.merge(GNI_per_capita[["country", "GNI per capita (US$)"]], on="country", how="left")
+
+
+scores_countries_2019 = scores_countries_2019.dropna(axis=0, subset=["GNI per capita (US$)", "ESG", "G", "S", "E"])
+
+scores_countries_2019 = scores_countries_2019.sort_values("ESG", ascending = False)
+
+np.corrcoef(scores_countries_2019["GNI per capita (US$)"], scores_countries_2019["ESG"]) #72%
+np.corrcoef(scores_countries_2019["GNI per capita (US$)"], scores_countries_2019["G"]) #72%
+np.corrcoef(scores_countries_2019["GNI per capita (US$)"], scores_countries_2019["S"]) #30%
+np.corrcoef(scores_countries_2019["GNI per capita (US$)"], scores_countries_2019["E"]) #-20%
+
+plot_score_GNI(scores_countries_2019, "E")
